@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 
 const CRITERIA = {
   minCapRate: 0.07,
@@ -70,7 +70,7 @@ function parsePastedListings(raw) {
   } catch { return []; }
 }
 
-async function analyzeWithClaude(prop, triage) {
+async function analyzeWithClaude(prop, triage, apiKey) {
   const prompt = `You are a commercial real estate underwriter. Analyze this multifamily listing for an investor: national market, 5–20 units, under $1M, min 7% cap rate, 25% down, min DSCR 1.25x, min CoC 8%.
 
 PROPERTY: ${prop.name}
@@ -88,7 +88,7 @@ Provide a 4-part brief:
 
 Be direct. Assume sophisticated buyer.`;
   const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST", headers: { "Content-Type": "application/json" },
+    method: "POST", headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
     body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: prompt }] })
   });
   if (!res.ok) throw new Error(`API ${res.status}`);
@@ -116,7 +116,7 @@ function Pill({ label, value, good }) {
   return <span style={{ background:bg, border:`1px solid ${bc}`, color:c, padding:"2px 8px", borderRadius:3, fontSize:11, fontFamily:"monospace", whiteSpace:"nowrap" }}>{label}: <strong>{value}</strong></span>;
 }
 
-function Card({ prop, triage, onAnalyze, analysis, analyzing }) {
+function Card({ prop, triage, onAnalyze, analysis, analyzing, hasKey }) {
   const [open, setOpen] = useState(false);
   const borderColor = triage.verdict==="PASS"?"#166534":triage.verdict==="REVIEW"?"#854d0e":"#1f2937";
   return (
@@ -142,9 +142,9 @@ function Card({ prop, triage, onAnalyze, analysis, analyzing }) {
       </div>
       <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
         {(triage.verdict==="PASS"||triage.verdict==="REVIEW") && (
-          <button onClick={()=>{ onAnalyze(prop,triage); setOpen(true); }} disabled={analyzing}
-            style={{ background:analyzing?"#1e2533":"linear-gradient(135deg,#1e40af,#1d4ed8)", border:"none", color:"#fff", padding:"7px 16px", borderRadius:5, fontSize:12, fontWeight:600, cursor:analyzing?"not-allowed":"pointer" }}>
-            {analyzing?"⏳ Analyzing...":"🔍 Analyze This Property"}
+          <button onClick={()=>{ if(hasKey){ onAnalyze(prop,triage); setOpen(true); } }} disabled={analyzing||!hasKey}
+            style={{ background:analyzing||!hasKey?"#1e2533":"linear-gradient(135deg,#1e40af,#1d4ed8)", border:"none", color:!hasKey?"#4b5563":"#fff", padding:"7px 16px", borderRadius:5, fontSize:12, fontWeight:600, cursor:analyzing||!hasKey?"not-allowed":"pointer" }}>
+            {analyzing?"⏳ Analyzing...":!hasKey?"🔒 Set API Key to Analyze":"🔍 Analyze This Property"}
           </button>
         )}
         {analysis && <button onClick={()=>setOpen(o=>!o)} style={{ background:"transparent", border:"1px solid #374151", color:"#94a3b8", padding:"7px 14px", borderRadius:5, fontSize:12, cursor:"pointer" }}>{open?"▲ Hide":"▼ Show"} Analysis</button>}
@@ -168,6 +168,29 @@ export default function App() {
   const [processing, setProcessing] = useState(false);
   const [status, setStatus] = useState("");
   const [stats, setStats] = useState(null);
+  const [apiKey, setApiKey] = useState("");
+  const [keyInput, setKeyInput] = useState("");
+  const [showKeyInput, setShowKeyInput] = useState(false);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("pt_api_key");
+    if (saved) setApiKey(saved);
+  }, []);
+
+  const saveKey = () => {
+    const k = keyInput.trim();
+    if (!k) return;
+    localStorage.setItem("pt_api_key", k);
+    setApiKey(k);
+    setKeyInput("");
+    setShowKeyInput(false);
+  };
+
+  const clearKey = () => {
+    localStorage.removeItem("pt_api_key");
+    setApiKey("");
+    setShowKeyInput(false);
+  };
 
   const runTriage = useCallback((list) => {
     const results = list.map(p => ({ prop:p, triage:triageProperty(p) }));
@@ -190,9 +213,9 @@ export default function App() {
 
   const handleAnalyze = async (prop, triage) => {
     const k = prop.name;
-    if (analyses[k]) return;
+    if (analyses[k] || !apiKey) return;
     setAnalyzing(a=>({...a,[k]:true}));
-    try { const r = await analyzeWithClaude(prop, triage); setAnalyses(a=>({...a,[k]:r})); }
+    try { const r = await analyzeWithClaude(prop, triage, apiKey); setAnalyses(a=>({...a,[k]:r})); }
     catch(e) { setAnalyses(a=>({...a,[k]:`Error: ${e.message}`})); }
     setAnalyzing(a=>({...a,[k]:false}));
   };
@@ -208,6 +231,24 @@ export default function App() {
             <span style={{ fontFamily:"monospace", fontSize:11, color:"#3b82f6", background:"#0d2e6e", padding:"2px 8px", borderRadius:3, letterSpacing:"0.1em" }}>SCREENER v1.0</span>
           </div>
           <p style={{ color:"#475569", fontSize:13 }}>National · 5–20 Units · Under $1M · Min 7.0% Cap · 25% Down · DSCR ≥1.25x · CoC ≥8%</p>
+          <div style={{ marginTop:14, display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+            {apiKey ? (
+              <>
+                <span style={{ fontFamily:"monospace", fontSize:11, color:"#4ade80", background:"#0d2e1a", border:"1px solid #166534", padding:"3px 10px", borderRadius:4 }}>✓ API Key set</span>
+                <button onClick={clearKey} style={{ background:"transparent", border:"1px solid #374151", color:"#64748b", padding:"3px 10px", borderRadius:4, fontSize:11, cursor:"pointer" }}>Revoke</button>
+              </>
+            ) : showKeyInput ? (
+              <>
+                <input value={keyInput} onChange={e=>setKeyInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveKey()}
+                  placeholder="sk-ant-..." autoFocus type="password"
+                  style={{ background:"#080d14", border:"1px solid #3b82f6", borderRadius:4, color:"#e2e8f0", fontSize:12, fontFamily:"monospace", padding:"4px 10px", width:280, outline:"none" }} />
+                <button onClick={saveKey} style={{ background:"#1e40af", border:"none", color:"#fff", padding:"4px 12px", borderRadius:4, fontSize:11, fontWeight:600, cursor:"pointer" }}>Save</button>
+                <button onClick={()=>setShowKeyInput(false)} style={{ background:"transparent", border:"1px solid #374151", color:"#64748b", padding:"4px 10px", borderRadius:4, fontSize:11, cursor:"pointer" }}>Cancel</button>
+              </>
+            ) : (
+              <button onClick={()=>setShowKeyInput(true)} style={{ background:"transparent", border:"1px solid #1e3a5f", color:"#3b82f6", padding:"3px 12px", borderRadius:4, fontSize:11, fontWeight:600, cursor:"pointer" }}>+ Set API Key to enable analysis</button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -262,7 +303,7 @@ export default function App() {
               <span style={{ color:"#475569", fontSize:12 }}>— sorted by verdict</span>
             </div>
             {sorted.map(({prop,triage})=>(
-              <Card key={prop.name} prop={prop} triage={triage} onAnalyze={handleAnalyze} analysis={analyses[prop.name]} analyzing={!!analyzing[prop.name]} />
+              <Card key={prop.name} prop={prop} triage={triage} onAnalyze={handleAnalyze} analysis={analyses[prop.name]} analyzing={!!analyzing[prop.name]} hasKey={!!apiKey} />
             ))}
           </div>
         )}
