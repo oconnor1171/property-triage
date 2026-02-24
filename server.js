@@ -8,21 +8,46 @@ app.use(express.static(path.join(__dirname, "build")));
 
 function parseAddressFromUrl(url) {
   try {
-    const m = url.match(/\/Listing\/([^/]+)\/(\d+)/);
-    if (!m) return null;
-    const parts = m[1].split("-");
-    let state = null;
-    if (/^[A-Z]{2}$/.test(parts[parts.length - 1])) state = parts.pop();
-    const streetTypes = ["Ave","Blvd","St","Dr","Rd","Ln","Way","Ct","Pl","Pkwy","Hwy","Cir","Ter","Trl","Loop"];
-    let streetEnd = -1;
-    for (let i = 0; i < parts.length; i++) {
-      if (streetTypes.includes(parts[i])) { streetEnd = i; break; }
+    // LoopNet: /Listing/Street-Address-City-ST/12345
+    const loopnet = url.match(/\/Listing\/([^/]+)\/(\d+)/);
+    if (loopnet) {
+      const parts = loopnet[1].split("-");
+      let state = null;
+      if (/^[A-Z]{2}$/.test(parts[parts.length - 1])) state = parts.pop();
+      const streetTypes = ["Ave","Blvd","St","Dr","Rd","Ln","Way","Ct","Pl","Pkwy","Hwy","Cir","Ter","Trl","Loop"];
+      let streetEnd = -1;
+      for (let i = 0; i < parts.length; i++) {
+        if (streetTypes.includes(parts[i])) { streetEnd = i; break; }
+      }
+      const street = streetEnd >= 0 ? parts.slice(0, streetEnd + 1).join(" ") : parts.join(" ");
+      const city = streetEnd >= 0 ? parts.slice(streetEnd + 1).join(" ") : null;
+      const location = [street, city, state].filter(Boolean).join(", ");
+      return { street, city, state, location };
     }
-    const street = streetEnd >= 0 ? parts.slice(0, streetEnd + 1).join(" ") : parts.join(" ");
-    const city = streetEnd >= 0 ? parts.slice(streetEnd + 1).join(" ") : null;
-    const location = [street, city, state].filter(Boolean).join(", ");
-    return { street, city, state, location };
-  } catch { return null; }
+    // Zillow: /homedetails/123-Street-Name-City-ST-12345/
+    const zillow = url.match(/\/homedetails\/([^/]+)\//);
+    if (zillow) {
+      const parts = zillow[1].split("-");
+      const zip = /^\d{5}$/.test(parts[parts.length - 1]) ? parts.pop() : null;
+      const state = /^[A-Z]{2}$/.test(parts[parts.length - 1]) ? parts.pop() : null;
+      const location = parts.join(" ") + (state ? `, ${state}` : "") + (zip ? ` ${zip}` : "");
+      return { street: parts.join(" "), city: null, state, location };
+    }
+    // Crexi: /properties/city-st-address/123456 or /for-sale/details/city/...
+    const crexi = url.match(/crexi\.com\/(?:properties|for-sale)\/([^/]+)/);
+    if (crexi) {
+      const slug = crexi[1].replace(/-/g, " ");
+      return { street: slug, city: null, state: null, location: slug };
+    }
+    // Realtor.com: /realestateandhomes-detail/Address_City_ST_ZIP
+    const realtor = url.match(/realestateandhomes-detail\/([^?#]+)/);
+    if (realtor) {
+      const parts = realtor[1].replace(/_/g, " ").split(" ");
+      const location = parts.join(", ");
+      return { street: parts[0] || "", city: null, state: null, location };
+    }
+  } catch {}
+  return null;
 }
 
 app.get("/api/fetch-listing", async (req, res) => {
@@ -120,8 +145,8 @@ app.get("/api/fetch-listing", async (req, res) => {
       success: false,
       blocked,
       message: blocked
-        ? "LoopNet blocked direct access — address extracted from URL. Fill in the remaining details and run triage."
-        : `Fetch failed (${err.message}). Fill in details manually.`,
+        ? "Site blocked direct access — address extracted from URL where possible. Fill in remaining details and run triage, or paste the full listing page text in the Paste tab."
+        : `Fetch failed (${err.message}). Try pasting the full page text in the Paste tab instead.`,
       prop: fallback,
     });
   }

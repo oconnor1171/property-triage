@@ -186,6 +186,47 @@ function parsePastedListings(raw) {
   } catch { return []; }
 }
 
+async function parseListingWithClaude(rawText, apiKey) {
+  const prompt = `Extract multifamily real estate listing data from the text below. Return ONLY a valid JSON object with these fields (use null for any field you cannot find):
+{
+  "name": "property name or address",
+  "price": 650000,
+  "units": 8,
+  "capRate": 0.082,
+  "yearBuilt": "1962",
+  "sqft": 6400,
+  "location": "City, ST 12345",
+  "description": "brief summary"
+}
+
+Rules:
+- price: integer dollars (e.g. 650000 not "$650K")
+- units: integer number of residential units
+- capRate: decimal (e.g. 0.082 for 8.2%)
+- yearBuilt: 4-digit string
+- sqft: integer total building square footage
+- Return ONLY the JSON object, no explanation
+
+LISTING TEXT:
+${rawText.slice(0, 6000)}`;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+    body: JSON.stringify({ model: "claude-3-haiku-20240307", max_tokens: 400, messages: [{ role: "user", content: prompt }] })
+  });
+  if (!res.ok) {
+    let errMsg = `API ${res.status}`;
+    try { const e = await res.json(); errMsg += `: ${e.error?.message || JSON.stringify(e)}`; } catch {}
+    throw new Error(errMsg);
+  }
+  const data = await res.json();
+  const text = data.content?.map(b => b.text).join("") ?? "";
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("Claude returned no JSON");
+  return JSON.parse(match[0]);
+}
+
 async function analyzeWithClaude(prop, triage, apiKey) {
   const prompt = `You are a commercial real estate underwriter. Analyze this multifamily listing for an investor: national market, 4–30 units, under $1M, min 7% cap rate, 25% down, min DSCR 1.25x, min CoC 8%.
 
@@ -325,7 +366,7 @@ export default function App() {
     setStatus(`Triage complete — ${pass} pass · ${review} review · ${fail} fail`);
   }, []);
 
-  const handleRun = () => {
+  const handleRun = async () => {
     const trimmed = text.trim();
     // If the user pasted just a URL, redirect to the URL tab
     if (/^https?:\/\/\S+$/.test(trimmed)) {
@@ -336,10 +377,36 @@ export default function App() {
       setUrlStatus("URL detected — click \"Fetch & Triage\" to load this listing.");
       return;
     }
-    setProcessing(true); setStatus("Parsing...");
+    setProcessing(true);
+
+    // Try Claude parsing first if API key is available
+    if (apiKey) {
+      setStatus("🤖 Parsing with Claude...");
+      try {
+        const parsed = await parseListingWithClaude(trimmed, apiKey);
+        if (parsed && (parsed.price || parsed.units || parsed.capRate)) {
+          runTriage([parsed]);
+          setProcessing(false);
+          return;
+        }
+      } catch (e) {
+        // Claude failed — fall through to regex
+        console.warn("Claude parse failed:", e.message);
+      }
+    }
+
+    // Fallback: regex extraction
+    setStatus("Parsing...");
     setTimeout(() => {
       const list = parsePastedListings(trimmed);
-      if (!list.length) { setStatus("⚠ Could not parse. Try demo or check format."); setProcessing(false); return; }
+      if (!list.length) {
+        setStatus(apiKey
+          ? "⚠ Could not extract listing data. Make sure you've pasted the full page text from a listing."
+          : "⚠ Could not parse. Set an API Key for smarter parsing, or check format."
+        );
+        setProcessing(false);
+        return;
+      }
       runTriage(list); setProcessing(false);
     }, 300);
   };
@@ -432,7 +499,7 @@ export default function App() {
 
         <div style={{ background:"#0f1621", border:"1px solid #1e2d45", borderRadius:10, padding:"22px 24px", marginBottom:24 }}>
           <div style={{ display:"flex", gap:8, marginBottom:18, flexWrap:"wrap" }}>
-            {[["paste","📋 Paste Listings"],["url","🔗 LoopNet URL"],["format","📐 Format Guide"]].map(([id,label])=>(
+            {[["paste","📋 Paste Listings"],["url","🔗 Listing URL"],["format","📐 Format Guide"]].map(([id,label])=>(
               <button key={id} onClick={()=>{ setMode(id); setUrlStatus(""); }} style={{ background:mode===id?"#1e40af":"transparent", border:`1px solid ${mode===id?"#3b82f6":"#1e2d45"}`, color:mode===id?"#fff":"#64748b", padding:"6px 16px", borderRadius:5, fontSize:12, cursor:"pointer", fontWeight:600 }}>{label}</button>
             ))}
           </div>
@@ -440,13 +507,13 @@ export default function App() {
           {mode==="url" ? (
             <>
               <div style={{ color:"#64748b", fontSize:12, marginBottom:10, lineHeight:1.6 }}>
-                Paste a LoopNet listing URL — we'll fetch the property data automatically and run triage.
-                <br/><span style={{ color:"#374151" }}>Note: LoopNet may block access; if so, we'll extract the address and prefill the form for you.</span>
+                Paste a listing URL from LoopNet, Crexi, Zillow, Realtor.com, or any other source — we'll attempt to fetch property data automatically.
+                <br/><span style={{ color:"#374151" }}>Note: some sites block direct access; if so, we'll extract the address and prefill the form for you.</span>
               </div>
               <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
                 <input value={urlInput} onChange={e=>setUrlInput(e.target.value)}
                   onKeyDown={e=>e.key==="Enter"&&handleFetchUrl()}
-                  placeholder="https://www.loopnet.com/Listing/..."
+                  placeholder="https://www.loopnet.com/Listing/... or crexi.com, zillow.com..."
                   style={{ flex:1, minWidth:200, background:"#080d14", border:"1px solid #1e2d45", borderRadius:6, color:"#cbd5e1", fontSize:12.5, fontFamily:"monospace", padding:"10px 14px", outline:"none" }} />
                 <button onClick={handleFetchUrl} disabled={!urlInput.trim()||urlFetching}
                   style={{ background:!urlInput.trim()||urlFetching?"#1e2533":"linear-gradient(135deg,#1e40af,#2563eb)", border:"none", color:"#fff", padding:"10px 22px", borderRadius:6, fontSize:13, fontWeight:600, cursor:!urlInput.trim()||urlFetching?"not-allowed":"pointer", opacity:!urlInput.trim()?0.5:1, whiteSpace:"nowrap" }}>
@@ -463,7 +530,7 @@ export default function App() {
           ) : mode==="paste" ? (
             <>
               <textarea value={text} onChange={e=>setText(e.target.value)}
-                placeholder={"Two options:\n\n① Copy the entire LoopNet/Crexi listing page (Ctrl+A → Ctrl+C) and paste here — we'll extract price, units, cap rate, and more automatically.\n\n② Or paste multiple listings in quick format (one per block):\n\n8-Unit Building — Cleveland, OH\n$640,000 · 8 units · 8.2% cap rate · Built 1962 · 6,400 SF\n\n7-Unit — Birmingham, AL\n$380,000 · 7 units · 9.1% cap"}
+                placeholder={"Paste listing text from any source:\n\n① LoopNet, Crexi, Zillow, Realtor.com, CoStar, MLS, broker email — open the listing, Ctrl+A → Ctrl+C, paste here.\n   With API key: Claude reads any format automatically.\n   Without API key: works best for structured text.\n\n② Or paste multiple quick-format listings:\n\n8-Unit Building — Cleveland, OH\n$640,000 · 8 units · 8.2% cap rate · Built 1962 · 6,400 SF\n\n7-Unit — Birmingham, AL\n$380,000 · 7 units · 9.1% cap"}
                 style={{ width:"100%", minHeight:160, background:"#080d14", border:"1px solid #1e2d45", borderRadius:6, color:"#cbd5e1", fontSize:12.5, fontFamily:"monospace", padding:"12px 14px", resize:"vertical", outline:"none", boxSizing:"border-box", lineHeight:1.65 }} />
               <div style={{ display:"flex", gap:10, marginTop:12, alignItems:"center", flexWrap:"wrap" }}>
                 <button onClick={handleRun} disabled={!text.trim()||processing}
@@ -501,7 +568,7 @@ export default function App() {
           <div style={{ background:"#0f1621", border:"1px solid #1e2d45", borderRadius:10, padding:"28px 32px" }}>
             <div style={{ fontFamily:"'DM Serif Display',Georgia,serif", fontSize:18, color:"#93c5fd", marginBottom:16 }}>How to Use</div>
             <div style={{ color:"#64748b", fontSize:13, lineHeight:2 }}>
-              <strong style={{ color:"#94a3b8" }}>Step 1</strong> — Browse LoopNet or Crexi. Either paste the URL in the URL tab, or Ctrl+A → Ctrl+C the entire listing page and paste it in the Paste tab — we extract what we need automatically.<br/>
+              <strong style={{ color:"#94a3b8" }}>Step 1</strong> — Browse any listing site (LoopNet, Crexi, Zillow, Realtor.com, MLS, broker emails). Either paste the URL in the URL tab, or Ctrl+A → Ctrl+C the full page and paste it here — with your API key, Claude reads any format automatically.<br/>
               <strong style={{ color:"#94a3b8" }}>Step 2</strong> — Run Triage. Every property scores instantly: PASS / REVIEW / FAIL.<br/>
               <strong style={{ color:"#94a3b8" }}>Step 3</strong> — Click Analyze on any PASS or REVIEW for a Claude deal brief.<br/>
               <strong style={{ color:"#94a3b8" }}>Step 4</strong> — Send survivors for a full 11-sheet underwriting model.<br/>
