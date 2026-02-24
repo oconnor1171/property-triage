@@ -171,6 +171,9 @@ export default function App() {
   const [apiKey, setApiKey] = useState("");
   const [keyInput, setKeyInput] = useState("");
   const [showKeyInput, setShowKeyInput] = useState(false);
+  const [urlInput, setUrlInput] = useState("");
+  const [urlFetching, setUrlFetching] = useState(false);
+  const [urlStatus, setUrlStatus] = useState("");
 
   useEffect(() => {
     const saved = localStorage.getItem("pt_api_key");
@@ -209,6 +212,39 @@ export default function App() {
       if (!list.length) { setStatus("⚠ Could not parse. Try demo or check format."); setProcessing(false); return; }
       runTriage(list); setProcessing(false);
     }, 300);
+  };
+
+  const handleFetchUrl = async () => {
+    if (!urlInput.trim()) return;
+    setUrlFetching(true);
+    setUrlStatus("");
+    try {
+      const res = await fetch(`/api/fetch-listing?url=${encodeURIComponent(urlInput.trim())}`);
+      const data = await res.json();
+      const prop = data.prop;
+      if (prop && (prop.price || prop.units)) {
+        runTriage([prop]);
+        setUrlStatus("");
+      } else {
+        // Prefill paste box with whatever we extracted
+        const lines = [
+          prop?.name || urlInput,
+          prop?.price ? `$${prop.price.toLocaleString()}` : "",
+          prop?.units ? `${prop.units} units` : "",
+          prop?.capRate ? `${(prop.capRate * 100).toFixed(1)}% cap rate` : "",
+          prop?.yearBuilt ? `Built ${prop.yearBuilt}` : "",
+          prop?.sqft ? `${prop.sqft.toLocaleString()} sf` : "",
+          prop?.location || "",
+          prop?.description || "",
+        ].filter(Boolean);
+        setText(lines.join("\n"));
+        setMode("paste");
+        setUrlStatus(data.message || "Partial data extracted — fill in any missing details, then run triage.");
+      }
+    } catch (e) {
+      setUrlStatus(`Error: ${e.message}`);
+    }
+    setUrlFetching(false);
   };
 
   const handleAnalyze = async (prop, triage) => {
@@ -265,13 +301,36 @@ export default function App() {
         )}
 
         <div style={{ background:"#0f1621", border:"1px solid #1e2d45", borderRadius:10, padding:"22px 24px", marginBottom:24 }}>
-          <div style={{ display:"flex", gap:8, marginBottom:18 }}>
-            {[["paste","📋 Paste Listings"],["format","📐 Format Guide"]].map(([id,label])=>(
-              <button key={id} onClick={()=>setMode(id)} style={{ background:mode===id?"#1e40af":"transparent", border:`1px solid ${mode===id?"#3b82f6":"#1e2d45"}`, color:mode===id?"#fff":"#64748b", padding:"6px 16px", borderRadius:5, fontSize:12, cursor:"pointer", fontWeight:600 }}>{label}</button>
+          <div style={{ display:"flex", gap:8, marginBottom:18, flexWrap:"wrap" }}>
+            {[["paste","📋 Paste Listings"],["url","🔗 LoopNet URL"],["format","📐 Format Guide"]].map(([id,label])=>(
+              <button key={id} onClick={()=>{ setMode(id); setUrlStatus(""); }} style={{ background:mode===id?"#1e40af":"transparent", border:`1px solid ${mode===id?"#3b82f6":"#1e2d45"}`, color:mode===id?"#fff":"#64748b", padding:"6px 16px", borderRadius:5, fontSize:12, cursor:"pointer", fontWeight:600 }}>{label}</button>
             ))}
           </div>
 
-          {mode==="paste" ? (
+          {mode==="url" ? (
+            <>
+              <div style={{ color:"#64748b", fontSize:12, marginBottom:10, lineHeight:1.6 }}>
+                Paste a LoopNet listing URL — we'll fetch the property data automatically and run triage.
+                <br/><span style={{ color:"#374151" }}>Note: LoopNet may block access; if so, we'll extract the address and prefill the form for you.</span>
+              </div>
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                <input value={urlInput} onChange={e=>setUrlInput(e.target.value)}
+                  onKeyDown={e=>e.key==="Enter"&&handleFetchUrl()}
+                  placeholder="https://www.loopnet.com/Listing/..."
+                  style={{ flex:1, minWidth:200, background:"#080d14", border:"1px solid #1e2d45", borderRadius:6, color:"#cbd5e1", fontSize:12.5, fontFamily:"monospace", padding:"10px 14px", outline:"none" }} />
+                <button onClick={handleFetchUrl} disabled={!urlInput.trim()||urlFetching}
+                  style={{ background:!urlInput.trim()||urlFetching?"#1e2533":"linear-gradient(135deg,#1e40af,#2563eb)", border:"none", color:"#fff", padding:"10px 22px", borderRadius:6, fontSize:13, fontWeight:600, cursor:!urlInput.trim()||urlFetching?"not-allowed":"pointer", opacity:!urlInput.trim()?0.5:1, whiteSpace:"nowrap" }}>
+                  {urlFetching?"⏳ Fetching...":"Fetch & Triage"}
+                </button>
+              </div>
+              {urlStatus && (
+                <div style={{ marginTop:10, color:"#fbbf24", fontSize:12, fontFamily:"monospace", background:"#1a1200", border:"1px solid #854d0e", borderRadius:4, padding:"8px 12px" }}>
+                  ⚠ {urlStatus}
+                </div>
+              )}
+              {status && !urlStatus && <div style={{ marginTop:8, color:"#64748b", fontSize:12, fontFamily:"monospace" }}>{status}</div>}
+            </>
+          ) : mode==="paste" ? (
             <>
               <textarea value={text} onChange={e=>setText(e.target.value)}
                 placeholder={"Paste listing data here — one property per block.\n\nExample:\n8-Unit Building — Cleveland, OH\n$640,000 asking\n8 units\n8.2% cap rate\nBuilt 1962\n6,400 SF"}

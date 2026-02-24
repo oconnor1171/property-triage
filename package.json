@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
+    "axios": "^1.6.0",
+    "cheerio": "^1.0.0",
+    "express": "^4.18.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-scripts": "5.0.1"
@@ -10,8 +13,10 @@
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
-    "test": "react-scripts test"
+    "test": "react-scripts test",
+    "server": "node server.js"
   },
+  "proxy": "http://localhost:10000",
   "eslintConfig": { "extends": ["react-app"] },
   "browserslist": {
     "production": [">0.2%", "not dead", "not op_mini all"],
