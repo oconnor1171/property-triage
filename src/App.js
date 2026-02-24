@@ -205,9 +205,13 @@ Provide a 4-part brief:
 Be direct. Assume sophisticated buyer.`;
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST", headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-    body: JSON.stringify({ model: "claude-haiku-4-5-20251001", max_tokens: 1000, messages: [{ role: "user", content: prompt }] })
+    body: JSON.stringify({ model: "claude-3-5-haiku-20241022", max_tokens: 1000, messages: [{ role: "user", content: prompt }] })
   });
-  if (!res.ok) throw new Error(`API ${res.status}`);
+  if (!res.ok) {
+    let errMsg = `API ${res.status}`;
+    try { const e = await res.json(); errMsg += `: ${e.error?.message || JSON.stringify(e)}`; } catch {}
+    throw new Error(errMsg);
+  }
   const data = await res.json();
   return data.content?.map(b => b.text).join("") ?? "Unavailable.";
 }
