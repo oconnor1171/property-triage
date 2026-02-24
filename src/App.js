@@ -46,8 +46,119 @@ function triageProperty(prop) {
   return { flags, passes, score, verdict, dscr, coc };
 }
 
+function extractSingleProperty(raw) {
+  // Flatten to single line for regex, keep original lines for name extraction
+  const flat = raw.replace(/\s+/g, " ").trim();
+  const lines = raw.split("\n").map(l => l.trim()).filter(Boolean);
+
+  // Price — try in order of specificity
+  let price = null;
+  const pricePatterns = [
+    /asking\s*(?:price)?:?\s*\$?([\d,.]+)\s*[Mm]/i,
+    /(?:sale\s*price|list(?:ing)?\s*price|price):?\s*\$?([\d,.]+)\s*[Mm]/i,
+    /\$([\d,.]+)\s*[Mm]\b/,
+    /asking\s*(?:price)?:?\s*\$?([\d,]+)/i,
+    /(?:sale\s*price|list(?:ing)?\s*price|price):?\s*\$?([\d,]+)/i,
+    /\$([\d,]+)/,
+  ];
+  for (const p of pricePatterns) {
+    const m = flat.match(p);
+    if (m) {
+      let v = m[1].replace(/,/g, "");
+      if (/[Mm]/.test(m[0])) v = parseFloat(v) * 1e6;
+      else if (/[Kk]/.test(m[0])) v = parseFloat(v) * 1e3;
+      else v = parseFloat(v);
+      if (v >= 50000 && v <= 15000000) { price = Math.round(v); break; }
+    }
+  }
+
+  // Units
+  let units = null;
+  const unitPatterns = [
+    /(?:number\s+of\s+units?|unit\s+count|total\s+units?):?\s*(\d+)/i,
+    /(\d+)\s*-\s*unit/i,
+    /(\d+)\s*unit(?:s|\s|$)/i,
+    /(\d+)\s*(?:residential\s+)?(?:apartment|apt|suite)s?\b/i,
+  ];
+  for (const p of unitPatterns) {
+    const m = flat.match(p);
+    if (m) { const u = parseInt(m[1]); if (u >= 1 && u <= 999) { units = u; break; } }
+  }
+
+  // Cap rate
+  let capRate = null;
+  const capPatterns = [
+    /cap\s*rate:?\s*([\d.]+)\s*%/i,
+    /([\d.]+)\s*%\s*cap(?:\s*rate)?/i,
+  ];
+  for (const p of capPatterns) {
+    const m = flat.match(p);
+    if (m) { const c = parseFloat(m[1]) / 100; if (c > 0 && c < 0.5) { capRate = c; break; } }
+  }
+
+  // Year built
+  let yearBuilt = null;
+  const yearPatterns = [
+    /(?:year\s*built|built\s*in|year\s*of\s*construction|built):?\s*(\d{4})/i,
+    /(\d{4})\s*(?:built|construction|year)/i,
+  ];
+  for (const p of yearPatterns) {
+    const m = flat.match(p);
+    if (m) { const y = parseInt(m[1]); if (y >= 1850 && y <= 2030) { yearBuilt = String(y); break; } }
+  }
+
+  // Square footage
+  let sqft = null;
+  const sqftPatterns = [
+    /(?:building\s+size|gross\s+(?:leasable\s+)?area|total\s+(?:sq\.?\s*ft|sf)|rentable\s+area):?\s*([\d,]+)/i,
+    /([\d,]+)\s*(?:sq\.?\s*ft\.?|square\s*feet)\b/i,
+    /([\d,]+)\s*sf\b/i,
+  ];
+  for (const p of sqftPatterns) {
+    const m = flat.match(p);
+    if (m) { const s = parseInt(m[1].replace(/,/g, "")); if (s >= 100 && s < 1000000) { sqft = s; break; } }
+  }
+
+  // Location — prefer full address with zip
+  let location = null;
+  const locPatterns = [
+    /\d+\s+[\w\s]+(?:Ave|Blvd|St|Dr|Rd|Ln|Way|Ct|Pl|Pkwy|Hwy|Cir|Ter|Loop)\w*\.?,?\s*[\w\s]+,\s*[A-Z]{2}\s+\d{5}/i,
+    /[\w\s]+,\s*[A-Z]{2}\s+\d{5}/,
+    /[\w\s]+,\s*[A-Z]{2}\b/,
+  ];
+  for (const p of locPatterns) {
+    const m = flat.match(p);
+    if (m && m[0].length < 100) { location = m[0].trim(); break; }
+  }
+
+  // Property name — first non-boilerplate line that looks like a title
+  const skipPhrases = /^(menu|home|search|log\s*in|sign|for\s*sale|loopnet|crexi|browse|commercial|©|all\s*rights|cookie|privacy|terms|share|save|print|map|street|photo|back\s*to)/i;
+  let name = null;
+  for (const line of lines.slice(0, 20)) {
+    if (skipPhrases.test(line)) continue;
+    if (line.length < 6 || line.length > 150) continue;
+    if (/^\d+$/.test(line)) continue;
+    if (/^https?:/.test(line)) continue;
+    name = line;
+    break;
+  }
+  if (!name) name = location || "Property";
+
+  // Description — grab the meatiest paragraph
+  const description = lines.filter(l => l.length > 60 && l.length < 600 && !skipPhrases.test(l)).slice(0, 3).join(" ");
+
+  return { name, price, units, capRate, yearBuilt, sqft, location, description };
+}
+
 function parsePastedListings(raw) {
   try {
+    // For large pastes (full page copies), always try single-property extraction
+    if (raw.trim().length > 400) {
+      const single = extractSingleProperty(raw);
+      if (single.price || single.units || single.capRate) return [single];
+    }
+
+    // Structured multi-block format (short, formatted input)
     const lines = raw.trim().split("\n").filter(l => l.trim());
     const properties = []; let current = null;
     for (const line of lines) {
@@ -66,7 +177,12 @@ function parsePastedListings(raw) {
       }
     }
     if (current) properties.push(current);
-    return properties.filter(p => p.price || p.units);
+    const found = properties.filter(p => p.price || p.units);
+    if (found.length) return found;
+
+    // Last resort: try single extraction on the whole thing
+    const single = extractSingleProperty(raw);
+    return (single.price || single.units || single.capRate) ? [single] : [];
   } catch { return []; }
 }
 
@@ -333,7 +449,7 @@ export default function App() {
           ) : mode==="paste" ? (
             <>
               <textarea value={text} onChange={e=>setText(e.target.value)}
-                placeholder={"Paste listing data here — one property per block.\n\nExample:\n8-Unit Building — Cleveland, OH\n$640,000 asking\n8 units\n8.2% cap rate\nBuilt 1962\n6,400 SF"}
+                placeholder={"Two options:\n\n① Copy the entire LoopNet/Crexi listing page (Ctrl+A → Ctrl+C) and paste here — we'll extract price, units, cap rate, and more automatically.\n\n② Or paste multiple listings in quick format (one per block):\n\n8-Unit Building — Cleveland, OH\n$640,000 · 8 units · 8.2% cap rate · Built 1962 · 6,400 SF\n\n7-Unit — Birmingham, AL\n$380,000 · 7 units · 9.1% cap"}
                 style={{ width:"100%", minHeight:160, background:"#080d14", border:"1px solid #1e2d45", borderRadius:6, color:"#cbd5e1", fontSize:12.5, fontFamily:"monospace", padding:"12px 14px", resize:"vertical", outline:"none", boxSizing:"border-box", lineHeight:1.65 }} />
               <div style={{ display:"flex", gap:10, marginTop:12, alignItems:"center", flexWrap:"wrap" }}>
                 <button onClick={handleRun} disabled={!text.trim()||processing}
@@ -371,7 +487,7 @@ export default function App() {
           <div style={{ background:"#0f1621", border:"1px solid #1e2d45", borderRadius:10, padding:"28px 32px" }}>
             <div style={{ fontFamily:"'DM Serif Display',Georgia,serif", fontSize:18, color:"#93c5fd", marginBottom:16 }}>How to Use</div>
             <div style={{ color:"#64748b", fontSize:13, lineHeight:2 }}>
-              <strong style={{ color:"#94a3b8" }}>Step 1</strong> — Browse LoopNet or Crexi. Copy listing details into the paste box.<br/>
+              <strong style={{ color:"#94a3b8" }}>Step 1</strong> — Browse LoopNet or Crexi. Either paste the URL in the URL tab, or Ctrl+A → Ctrl+C the entire listing page and paste it in the Paste tab — we extract what we need automatically.<br/>
               <strong style={{ color:"#94a3b8" }}>Step 2</strong> — Run Triage. Every property scores instantly: PASS / REVIEW / FAIL.<br/>
               <strong style={{ color:"#94a3b8" }}>Step 3</strong> — Click Analyze on any PASS or REVIEW for a Claude deal brief.<br/>
               <strong style={{ color:"#94a3b8" }}>Step 4</strong> — Send survivors for a full 11-sheet underwriting model.<br/>
