@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 
 const CRITERIA = {
   minCapRate: 0.07,
-  maxPrice: 1_000_000,
+  maxPrice: 1_200_000,
   minUnits: 4,
   maxUnits: 30,
   downPayment: 0.25,
@@ -17,7 +17,7 @@ const CRITERIA = {
 function triageProperty(prop) {
   const flags = [], passes = [];
   let score = 0;
-  if (prop.price > CRITERIA.maxPrice) { flags.push(`Price $${(prop.price/1000).toFixed(0)}K exceeds $1M limit`); }
+  if (prop.price > CRITERIA.maxPrice) { flags.push(`Price $${(prop.price/1000).toFixed(0)}K exceeds $1.2M limit`); }
   else { passes.push(`Price $${(prop.price/1000).toFixed(0)}K ✓`); score += 20; }
   if (prop.units < CRITERIA.minUnits || prop.units > CRITERIA.maxUnits) { flags.push(`${prop.units} units outside 4–30 range`); }
   else { passes.push(`${prop.units} units ✓`); score += 15; }
@@ -228,7 +228,7 @@ ${rawText.slice(0, 6000)}`;
 }
 
 async function analyzeWithClaude(prop, triage, apiKey) {
-  const prompt = `You are a commercial real estate underwriter. Analyze this multifamily listing for an investor: national market, 4–30 units, under $1M, min 7% cap rate, 25% down, min DSCR 1.25x, min CoC 8%.
+  const prompt = `You are a commercial real estate underwriter. Analyze this multifamily listing for an investor: national market, 4–30 units, under $1.2M, min 7% cap rate, 25% down, min DSCR 1.25x, min CoC 8%.
 
 PROPERTY: ${prop.name}
 Price: $${prop.price?.toLocaleString() ?? "Unknown"} | Units: ${prop.units ?? "?"} | Cap: ${prop.capRate ? (prop.capRate*100).toFixed(1)+"%" : "Not stated"}
@@ -463,7 +463,7 @@ export default function App() {
             <span style={{ fontFamily:"'DM Serif Display',Georgia,serif", fontSize:28, fontWeight:700, color:"#f1f5f9", letterSpacing:"-0.02em" }}>Property Triage</span>
             <span style={{ fontFamily:"monospace", fontSize:11, color:"#3b82f6", background:"#0d2e6e", padding:"2px 8px", borderRadius:3, letterSpacing:"0.1em" }}>SCREENER v1.0</span>
           </div>
-          <p style={{ color:"#475569", fontSize:13 }}>National · 4–30 Units · Under $1M · Min 7.0% Cap · 25% Down · DSCR ≥1.25x · CoC ≥8%</p>
+          <p style={{ color:"#475569", fontSize:13 }}>National · 4–30 Units · Under $1.2M · Min 7.0% Cap · 25% Down · DSCR ≥1.25x · CoC ≥8%</p>
           <div style={{ marginTop:14, display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
             {apiKey ? (
               <>
