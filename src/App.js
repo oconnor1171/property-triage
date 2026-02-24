@@ -417,6 +417,13 @@ export default function App() {
     setUrlStatus("");
     try {
       const res = await fetch(`/api/fetch-listing?url=${encodeURIComponent(urlInput.trim())}`);
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        // Server returned HTML — likely still deployed as static site or server unavailable
+        setUrlStatus("URL fetch API is unavailable. Switch to the Paste tab: open the listing page, Ctrl+A → Ctrl+C, paste the full page text, and click Run Triage.");
+        setUrlFetching(false);
+        return;
+      }
       const data = await res.json();
       const prop = data.prop;
       if (prop && (prop.price || prop.units)) {
