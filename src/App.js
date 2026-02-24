@@ -575,10 +575,12 @@ export default function App() {
           <div style={{ background:"#0f1621", border:"1px solid #1e2d45", borderRadius:10, padding:"28px 32px" }}>
             <div style={{ fontFamily:"'DM Serif Display',Georgia,serif", fontSize:18, color:"#93c5fd", marginBottom:16 }}>How to Use</div>
             <div style={{ color:"#64748b", fontSize:13, lineHeight:2 }}>
-              <strong style={{ color:"#94a3b8" }}>Step 1</strong> — Browse any listing site (LoopNet, Crexi, Zillow, Realtor.com, MLS, broker emails). Either paste the URL in the URL tab, or Ctrl+A → Ctrl+C the full page and paste it here — with your API key, Claude reads any format automatically.<br/>
-              <strong style={{ color:"#94a3b8" }}>Step 2</strong> — Run Triage. Every property scores instantly: PASS / REVIEW / FAIL.<br/>
-              <strong style={{ color:"#94a3b8" }}>Step 3</strong> — Click Analyze on any PASS or REVIEW for a Claude deal brief.<br/>
-              <strong style={{ color:"#94a3b8" }}>Step 4</strong> — Send survivors for a full 11-sheet underwriting model.<br/>
+              <strong style={{ color:"#94a3b8" }}>Step 1</strong> — Browse any listing site (LoopNet, Crexi, Zillow, Realtor.com, MLS, broker emails).<br/>
+              <strong style={{ color:"#94a3b8" }}>Step 2</strong> — On the listing page, press <strong style={{ color:"#e2e8f0" }}>Ctrl+A</strong> to select all, then <strong style={{ color:"#e2e8f0" }}>Ctrl+C</strong> to copy. Paste it into the <strong style={{ color:"#e2e8f0" }}>Paste Listings</strong> tab and click <strong style={{ color:"#e2e8f0" }}>Run Triage</strong> — Claude extracts the data automatically.<br/>
+              <span style={{ color:"#475569", fontSize:12 }}>⚠ Note: The URL tab attempts to fetch listing data directly, but most sites (LoopNet, Zillow, Crexi, Realtor.com) actively block automated access. The Ctrl+A → Ctrl+C paste method is the most reliable approach.</span><br/>
+              <strong style={{ color:"#94a3b8" }}>Step 3</strong> — Every property scores instantly: PASS / REVIEW / FAIL.<br/>
+              <strong style={{ color:"#94a3b8" }}>Step 4</strong> — Click Analyze on any PASS or REVIEW for a Claude deal brief.<br/>
+              <strong style={{ color:"#94a3b8" }}>Step 5</strong> — Send survivors for a full underwriting model.<br/>
               <br/><span style={{ color:"#374151", fontSize:12 }}>→ Click "Try Demo" to see 5 sample properties triaged now.</span>
             </div>
           </div>
