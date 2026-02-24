@@ -326,9 +326,19 @@ export default function App() {
   }, []);
 
   const handleRun = () => {
+    const trimmed = text.trim();
+    // If the user pasted just a URL, redirect to the URL tab
+    if (/^https?:\/\/\S+$/.test(trimmed)) {
+      setUrlInput(trimmed);
+      setText("");
+      setMode("url");
+      setStatus("");
+      setUrlStatus("URL detected — click \"Fetch & Triage\" to load this listing.");
+      return;
+    }
     setProcessing(true); setStatus("Parsing...");
     setTimeout(() => {
-      const list = parsePastedListings(text);
+      const list = parsePastedListings(trimmed);
       if (!list.length) { setStatus("⚠ Could not parse. Try demo or check format."); setProcessing(false); return; }
       runTriage(list); setProcessing(false);
     }, 300);
