@@ -2,9 +2,9 @@ import { useState, useCallback, useEffect } from "react";
 
 const CRITERIA = {
   minCapRate: 0.07,
-  maxPrice: 1_200_000,
-  minUnits: 4,
-  maxUnits: 30,
+  maxPrice: 1_000_000,
+  minUnits: 5,
+  maxUnits: 20,
   downPayment: 0.25,
   interestRate: 0.0725,
   loanTermYears: 25,
@@ -12,20 +12,99 @@ const CRITERIA = {
   expenseRatio: 0.45,
   minDSCR: 1.25,
   minCoC: 0.08,
+  // v2.0 — price per unit thresholds
+  maxPricePerUnitHard: 250_000,   // auto-FAIL above this
+  maxPricePerUnitWarn: 175_000,   // yellow flag above this
+  maxPricePerUnitNoRent: 150_000, // no-rent listings only REVIEW if at/below this
 };
 
+// ─── v2.0: Land-play keyword detector ────────────────────────────────────────
+const LAND_PLAY_KEYWORDS = [
+  "redevelopment", "redevelop", "land value", "assemblage",
+  "entitlement", "entitle", "ground lease", "land play",
+  "development opportunity", "teardown", "tear down",
+  "shovel ready", "build to suit", "land opportunity",
+];
+
+function isLandPlay(prop) {
+  const text = `${prop.name} ${prop.description}`.toLowerCase();
+  return LAND_PLAY_KEYWORDS.some((kw) => text.includes(kw));
+}
+
 function triageProperty(prop) {
-  const flags = [], passes = [];
+  const flags = [], passes = [], disqualifiers = [];
   let score = 0;
-  if (prop.price > CRITERIA.maxPrice) { flags.push(`Price $${(prop.price/1000).toFixed(0)}K exceeds $1.2M limit`); }
-  else { passes.push(`Price $${(prop.price/1000).toFixed(0)}K ✓`); score += 20; }
-  if (prop.units < CRITERIA.minUnits || prop.units > CRITERIA.maxUnits) { flags.push(`${prop.units} units outside 4–30 range`); }
-  else { passes.push(`${prop.units} units ✓`); score += 15; }
+
+  const landPlay = isLandPlay(prop);
+  const noRentData = prop.capRate === null;
+  const ppu = prop.price && prop.units ? prop.price / prop.units : null;
+
+  // ── FIX 1: Land-play + no income data = hard FAIL ─────────────────────────
+  if (landPlay && noRentData) {
+    disqualifiers.push(
+      "LAND / REDEVELOPMENT PLAY — no income data disclosed. Seller is pricing for land value, not cash flow. Not suitable for income underwriting."
+    );
+  } else if (landPlay) {
+    flags.push("⚠ Redevelopment language detected — verify income thesis is primary, not land play");
+  }
+
+  // ── Price check ────────────────────────────────────────────────────────────
+  if (prop.price > CRITERIA.maxPrice) {
+    flags.push(`Price $${(prop.price/1000).toFixed(0)}K exceeds $1M limit`);
+  } else if (prop.price) {
+    passes.push(`Price $${(prop.price/1000).toFixed(0)}K ✓`);
+    score += 20;
+  }
+
+  // ── Unit count ─────────────────────────────────────────────────────────────
+  if (!prop.units || prop.units < CRITERIA.minUnits || prop.units > CRITERIA.maxUnits) {
+    flags.push(`${prop.units ?? "?"} units outside 5–20 range`);
+  } else {
+    passes.push(`${prop.units} units ✓`);
+    score += 15;
+  }
+
+  // ── FIX 2: Price-per-unit check ────────────────────────────────────────────
+  if (ppu !== null) {
+    if (ppu > CRITERIA.maxPricePerUnitHard) {
+      disqualifiers.push(
+        `Price/unit $${Math.round(ppu/1000)}K exceeds $250K hard limit — land premium detected, not income value`
+      );
+    } else if (ppu > CRITERIA.maxPricePerUnitWarn) {
+      flags.push(`⚠ Price/unit $${Math.round(ppu/1000)}K is high (>$175K) — verify income justifies premium`);
+    } else {
+      passes.push(`Price/unit $${Math.round(ppu/1000)}K ✓`);
+      score += 10;
+    }
+  }
+
+  // ── FIX 3: Tightened no-cap-rate rule ─────────────────────────────────────
   let capRateStatus = "missing";
   if (prop.capRate !== null) {
-    if (prop.capRate >= CRITERIA.minCapRate) { passes.push(`Cap rate ${(prop.capRate*100).toFixed(1)}% ≥ 7.0% ✓`); score += 30; capRateStatus = "pass"; }
-    else { flags.push(`Cap rate ${(prop.capRate*100).toFixed(1)}% below 7.0% threshold`); capRateStatus = "fail"; }
-  } else { flags.push("Cap rate not stated — manual review required"); score += 5; }
+    if (prop.capRate >= CRITERIA.minCapRate) {
+      passes.push(`Cap rate ${(prop.capRate*100).toFixed(1)}% ≥ 7.0% ✓`);
+      score += 30;
+      capRateStatus = "pass";
+    } else {
+      flags.push(`Cap rate ${(prop.capRate*100).toFixed(1)}% below 7.0% threshold`);
+      capRateStatus = "fail";
+    }
+  } else {
+    if (ppu !== null && ppu <= CRITERIA.maxPricePerUnitNoRent) {
+      // Low price/unit + no cap rate = possible genuine value-add
+      flags.push("Cap rate not stated — possible value-add. Verify rent roll before proceeding.");
+      capRateStatus = "missing-low-ppu";
+      score += 5;
+    } else {
+      // Higher price/unit + no cap rate = cannot underwrite
+      disqualifiers.push(
+        `No cap rate or rent data disclosed + price/unit $${ppu ? Math.round(ppu/1000)+"K" : "unknown"} exceeds $150K threshold — cannot underwrite on income basis. Obtain rent roll from broker first.`
+      );
+      capRateStatus = "missing-high-ppu";
+    }
+  }
+
+  // ── DSCR & CoC estimate ───────────────────────────────────────────────────
   let dscr = null, coc = null;
   if (prop.price && prop.capRate) {
     const noi = prop.price * prop.capRate;
@@ -41,9 +120,20 @@ function triageProperty(prop) {
     if (coc >= CRITERIA.minCoC) { passes.push(`Est. CoC ${(coc*100).toFixed(1)}% ✓`); score += 15; }
     else { flags.push(`Est. CoC ${(coc*100).toFixed(1)}% below 8% target`); }
   }
-  const hardFails = flags.filter(f => !f.includes("manual review")).length;
-  const verdict = hardFails === 0 && score >= 65 ? "PASS" : capRateStatus === "missing" && hardFails <= 1 && score >= 35 ? "REVIEW" : "FAIL";
-  return { flags, passes, score, verdict, dscr, coc };
+
+  // ── Final verdict ─────────────────────────────────────────────────────────
+  let verdict;
+  if (disqualifiers.length > 0) {
+    verdict = "FAIL";
+  } else {
+    const hardFails = flags.filter(f => !f.startsWith("⚠")).length;
+    verdict =
+      hardFails === 0 && score >= 65 ? "PASS" :
+      (capRateStatus === "missing-low-ppu") && hardFails <= 1 && score >= 30 ? "REVIEW" :
+      "FAIL";
+  }
+
+  return { flags, passes, disqualifiers, score, verdict, dscr, coc };
 }
 
 function extractSingleProperty(raw) {
@@ -228,13 +318,14 @@ ${rawText.slice(0, 6000)}`;
 }
 
 async function analyzeWithClaude(prop, triage, apiKey) {
-  const prompt = `You are a commercial real estate underwriter. Analyze this multifamily listing for an investor: national market, 4–30 units, under $1.2M, min 7% cap rate, 25% down, min DSCR 1.25x, min CoC 8%.
+  const prompt = `You are a commercial real estate underwriter. Analyze this multifamily listing for an investor: national market, 5–20 units, under $1M, min 7% cap rate, max $175K/unit, 25% down, min DSCR 1.25x, min CoC 8%.
 
 PROPERTY: ${prop.name}
 Price: $${prop.price?.toLocaleString() ?? "Unknown"} | Units: ${prop.units ?? "?"} | Cap: ${prop.capRate ? (prop.capRate*100).toFixed(1)+"%" : "Not stated"}
 Built: ${prop.yearBuilt ?? "?"} | SF: ${prop.sqft ?? "?"} | Location: ${prop.location ?? "?"}
 Description: ${prop.description?.trim() ?? "None"}
-Triage: ${triage.verdict} | Est. DSCR: ${triage.dscr?.toFixed(2)??"N/A"} | Est. CoC: ${triage.coc?(triage.coc*100).toFixed(1)+"%":"N/A"}
+Triage v2.0: ${triage.verdict} | Est. DSCR: ${triage.dscr?.toFixed(2)??"N/A"} | Est. CoC: ${triage.coc?(triage.coc*100).toFixed(1)+"%":"N/A"}
+Disqualifiers: ${triage.disqualifiers?.join("; ")||"None"}
 Flags: ${triage.flags.join("; ")||"None"}
 
 Provide a 4-part brief:
@@ -258,11 +349,11 @@ Be direct. Assume sophisticated buyer.`;
 }
 
 const DEMO = [
-  { name: "8-Unit Brick Apartment — Cleveland, OH", price: 640000, units: 8, capRate: 0.082, yearBuilt: "1962", sqft: 6400, location: "Cleveland, OH 44105", description: "Fully occupied. New roof 2021." },
+  { name: "8-Unit Brick Apartment — Cleveland, OH", price: 640000, units: 8, capRate: 0.082, yearBuilt: "1962", sqft: 6400, location: "Cleveland, OH 44105", description: "Fully occupied. Long-term tenants. New roof 2021." },
   { name: "12-Unit Mixed-Use — Raleigh, NC", price: 895000, units: 10, capRate: 0.071, yearBuilt: "1978", sqft: 9200, location: "Raleigh, NC 27601", description: "2 commercial storefronts + 10 residential. Below-market rents." },
-  { name: "6-Unit Garden Apartment — Memphis, TN", price: 425000, units: 6, capRate: null, yearBuilt: "1955", sqft: 4800, location: "Memphis, TN 38104", description: "Rents below market. Owner retiring." },
-  { name: "15-Unit Complex — Phoenix, AZ", price: 1250000, units: 15, capRate: 0.055, yearBuilt: "1989", sqft: 12000, location: "Phoenix, AZ 85003", description: "Class B. Strong occupancy." },
-  { name: "7-Unit Multifamily — Birmingham, AL", price: 380000, units: 7, capRate: 0.091, yearBuilt: "1968", sqft: 5600, location: "Birmingham, AL 35203", description: "Below market rents. Owner carry available." },
+  { name: "6-Unit Garden Apartment — Memphis, TN", price: 425000, units: 6, capRate: null, yearBuilt: "1955", sqft: 4800, location: "Memphis, TN 38104", description: "Rents below market. Owner retiring. Recent HVAC updates." },
+  { name: "4-Unit Waterfront Quadruplex — Tampa, FL (Rocky Creek)", price: 999000, units: 4, capRate: null, yearBuilt: "1968", sqft: 2016, location: "Tampa, FL 33615", description: "Waterfront redevelopment opportunity. 200ft Rocky Creek frontage, boat ramp, dock. RMC-6 zoning. No rents disclosed." },
+  { name: "7-Unit Multifamily — Birmingham, AL", price: 380000, units: 7, capRate: 0.091, yearBuilt: "1968", sqft: 5600, location: "Birmingham, AL 35203", description: "Below market rents. Owner carry available. Deferred maintenance noted." },
 ];
 
 function Badge({ v }) {
@@ -279,7 +370,9 @@ function Pill({ label, value, good }) {
 
 function Card({ prop, triage, onAnalyze, analysis, analyzing, hasKey }) {
   const [open, setOpen] = useState(false);
-  const borderColor = triage.verdict==="PASS"?"#166534":triage.verdict==="REVIEW"?"#854d0e":"#1f2937";
+  const isLand = triage.disqualifiers?.some(d => d.includes("LAND") || d.includes("REDEVELOPMENT"));
+  const borderColor = triage.verdict==="PASS"?"#166534":triage.verdict==="REVIEW"?"#854d0e":"#3f1010";
+  const ppu = prop.price && prop.units ? prop.price / prop.units : null;
   return (
     <div style={{ background:"#0f1621", border:`1px solid ${borderColor}`, borderRadius:8, padding:"18px 20px", marginBottom:12 }}>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:12, marginBottom:10 }}>
@@ -292,14 +385,28 @@ function Card({ prop, triage, onAnalyze, analysis, analyzing, hasKey }) {
       <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:12 }}>
         {prop.price && <Pill label="Ask" value={`$${(prop.price/1000).toFixed(0)}K`} good={prop.price<=CRITERIA.maxPrice} />}
         {prop.units && <Pill label="Units" value={prop.units} good={prop.units>=CRITERIA.minUnits&&prop.units<=CRITERIA.maxUnits} />}
+        {ppu !== null && <Pill label="$/Unit" value={`$${Math.round(ppu/1000)}K`} good={ppu<=CRITERIA.maxPricePerUnitWarn} />}
         {prop.capRate!==null ? <Pill label="Cap" value={`${(prop.capRate*100).toFixed(1)}%`} good={prop.capRate>=CRITERIA.minCapRate} /> : <Pill label="Cap" value="N/S" good={null} />}
         {triage.dscr!==null && <Pill label="Est.DSCR" value={`${triage.dscr.toFixed(2)}x`} good={triage.dscr>=CRITERIA.minDSCR} />}
         {triage.coc!==null && <Pill label="Est.CoC" value={`${(triage.coc*100).toFixed(1)}%`} good={triage.coc>=CRITERIA.minCoC} />}
         {prop.yearBuilt && <Pill label="Built" value={prop.yearBuilt} good={null} />}
       </div>
+
+      {/* Hard disqualifiers — prominent red alert box */}
+      {triage.disqualifiers?.length > 0 && (
+        <div style={{ background:"#1a0505", border:"1px solid #7f1d1d", borderRadius:6, padding:"10px 14px", marginBottom:12 }}>
+          <div style={{ color:"#fca5a5", fontSize:11, fontFamily:"monospace", letterSpacing:"0.08em", marginBottom:6 }}>
+            ✗ AUTO-DISQUALIFIED{isLand ? " — LAND / REDEVELOPMENT PLAY" : ""}
+          </div>
+          {triage.disqualifiers.map((d, i) => (
+            <div key={i} style={{ color:"#f87171", fontSize:12, lineHeight:1.7 }}>{d}</div>
+          ))}
+        </div>
+      )}
+
       <div style={{ display:"flex", gap:20, marginBottom:12, fontSize:12 }}>
         <div>{triage.passes.map((p,i)=><div key={i} style={{ color:"#4ade80", lineHeight:1.7 }}>✓ {p}</div>)}</div>
-        <div>{triage.flags.map((f,i)=><div key={i} style={{ color:f.includes("manual")?"#fbbf24":"#f87171", lineHeight:1.7 }}>{f.includes("manual")?"⚠":"✗"} {f}</div>)}</div>
+        <div>{triage.flags.map((f,i)=><div key={i} style={{ color:f.startsWith("⚠")?"#fbbf24":"#f87171", lineHeight:1.7 }}>{f.startsWith("⚠")?"":"✗ "}{f}</div>)}</div>
       </div>
       <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
         {(triage.verdict==="PASS"||triage.verdict==="REVIEW") && (
@@ -468,10 +575,13 @@ export default function App() {
         <div style={{ maxWidth:960, margin:"0 auto" }}>
           <div style={{ display:"flex", alignItems:"baseline", gap:12, marginBottom:6, flexWrap:"wrap" }}>
             <span style={{ fontFamily:"'DM Serif Display',Georgia,serif", fontSize:28, fontWeight:700, color:"#f1f5f9", letterSpacing:"-0.02em" }}>Property Triage</span>
-            <span style={{ fontFamily:"monospace", fontSize:11, color:"#3b82f6", background:"#0d2e6e", padding:"2px 8px", borderRadius:3, letterSpacing:"0.1em" }}>SCREENER v1.0</span>
+            <span style={{ fontFamily:"monospace", fontSize:11, color:"#3b82f6", background:"#0d2e6e", padding:"2px 8px", borderRadius:3, letterSpacing:"0.1em" }}>SCREENER v2.0</span>
           </div>
-          <p style={{ color:"#475569", fontSize:13 }}>National · 4–30 Units · Under $1.2M · Min 7.0% Cap · 25% Down · DSCR ≥1.25x · CoC ≥8%</p>
-          <div style={{ marginTop:14, display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+          <p style={{ color:"#475569", fontSize:13 }}>National · 5–20 Units · Under $1M · Min 7.0% Cap · ≤$175K/unit · 25% Down · DSCR ≥1.25x · CoC ≥8%</p>
+          <div style={{ marginBottom:14, background:"#0a1a0a", border:"1px solid #14532d", borderRadius:6, padding:"8px 14px", fontSize:11, color:"#4ade80", fontFamily:"monospace" }}>
+            v2.0: ① Land/redevelopment plays auto-FAIL · ② Price/unit hard cap $250K · ③ No-rent listings only REVIEW if price/unit ≤$150K
+          </div>
+          <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
             {apiKey ? (
               <>
                 <span style={{ fontFamily:"monospace", fontSize:11, color:"#4ade80", background:"#0d2e1a", border:"1px solid #166534", padding:"3px 10px", borderRadius:4 }}>✓ API Key set</span>
@@ -506,7 +616,7 @@ export default function App() {
 
         <div style={{ background:"#0f1621", border:"1px solid #1e2d45", borderRadius:10, padding:"22px 24px", marginBottom:24 }}>
           <div style={{ display:"flex", gap:8, marginBottom:18, flexWrap:"wrap" }}>
-            {[["paste","📋 Paste Listings"],["url","🔗 Listing URL"],["format","📐 Format Guide"]].map(([id,label])=>(
+            {[["paste","📋 Paste Listings"],["url","🔗 Listing URL"],["format","📐 Format Guide"],["rules","⚙ Filter Rules v2"]].map(([id,label])=>(
               <button key={id} onClick={()=>{ setMode(id); setUrlStatus(""); }} style={{ background:mode===id?"#1e40af":"transparent", border:`1px solid ${mode===id?"#3b82f6":"#1e2d45"}`, color:mode===id?"#fff":"#64748b", padding:"6px 16px", borderRadius:5, fontSize:12, cursor:"pointer", fontWeight:600 }}>{label}</button>
             ))}
           </div>
@@ -546,15 +656,37 @@ export default function App() {
                 </button>
                 <button onClick={()=>{ setProcessing(true); setTimeout(()=>{ runTriage(DEMO); setProcessing(false); },400); }}
                   style={{ background:"transparent", border:"1px solid #374151", color:"#94a3b8", padding:"9px 18px", borderRadius:6, fontSize:13, cursor:"pointer" }}>
-                  Try Demo
+                  Try Demo (incl. Rocky Creek)
                 </button>
                 {status && <span style={{ color:"#64748b", fontSize:12, fontFamily:"monospace" }}>{status}</span>}
               </div>
             </>
-          ) : (
+          ) : mode==="format" ? (
             <div style={{ background:"#080d14", border:"1px solid #1e2d45", borderRadius:6, padding:"14px 16px", color:"#94a3b8", fontSize:12, fontFamily:"monospace", lineHeight:1.85 }}>
               <div style={{ color:"#60a5fa", marginBottom:8, fontWeight:600 }}>▸ ONE BLOCK PER PROPERTY:</div>
-              {`8-Unit Building — Memphis, TN     ← name line\n$540,000 asking                  ← price with $\n8 units                          ← unit count\n7.8% cap rate                    ← cap with %\nBuilt 1961                       ← year built\n4,800 sf                         ← square feet\nMemphis, TN 38104                ← city, ST\nAny description notes...`}
+              {`8-Unit Building — Memphis, TN     ← name line (triggers new property)\n$540,000 asking                  ← price with $\n8 units                          ← unit count\n7.8% cap rate                    ← cap with %\nBuilt 1961                       ← year built\n4,800 sf                         ← square feet\nMemphis, TN 38104                ← city, ST ZIP\nAny description / notes...       ← scanned for land-play keywords`}
+            </div>
+          ) : (
+            <div style={{ color:"#94a3b8", fontSize:12, lineHeight:2, fontFamily:"monospace" }}>
+              <div style={{ color:"#60a5fa", marginBottom:10, fontWeight:600 }}>▸ TRIAGE RULES v2.0 — ALL MUST PASS FOR GREEN</div>
+              {[
+                ["✗ HARD FAIL","Asking price > $1,000,000"],
+                ["✗ HARD FAIL","Units outside 5–20 range"],
+                ["✗ HARD FAIL","Price/unit > $250,000 (land premium detected)"],
+                ["✗ HARD FAIL","Redevelopment/land keywords + no rent data disclosed"],
+                ["✗ HARD FAIL","No cap rate or rent data + price/unit > $150,000"],
+                ["✗ HARD FAIL","Stated cap rate < 7.0%"],
+                ["✗ HARD FAIL","Est. DSCR < 1.25x (25% dn, 7.25%, 25yr)"],
+                ["✗ HARD FAIL","Est. CoC < 8.0%"],
+                ["⚠ FLAG ONLY","Price/unit $175K–$250K — verify income justifies premium"],
+                ["⚠ FLAG ONLY","Redevelopment language present even with cap rate stated"],
+                ["⚠ REVIEW","No cap rate + price/unit ≤ $150K (possible value-add worth a call)"],
+              ].map(([tag,rule],i)=>(
+                <div key={i} style={{ display:"flex", gap:12, paddingBottom:2 }}>
+                  <span style={{ color:tag.includes("HARD")?"#f87171":"#fbbf24", minWidth:120 }}>{tag}</span>
+                  <span style={{ color:"#64748b" }}>{rule}</span>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -581,14 +713,14 @@ export default function App() {
               <strong style={{ color:"#94a3b8" }}>Step 3</strong> — Every property scores instantly: PASS / REVIEW / FAIL.<br/>
               <strong style={{ color:"#94a3b8" }}>Step 4</strong> — Click Analyze on any PASS or REVIEW for a Claude deal brief.<br/>
               <strong style={{ color:"#94a3b8" }}>Step 5</strong> — Send survivors for a full underwriting model.<br/>
-              <br/><span style={{ color:"#374151", fontSize:12 }}>→ Click "Try Demo" to see 5 sample properties triaged now.</span>
+              <br/><span style={{ color:"#374151", fontSize:12 }}>→ Click "Try Demo (incl. Rocky Creek)" — Tampa waterfront now correctly auto-FAILs as a land play.</span>
             </div>
           </div>
         )}
 
         <div style={{ marginTop:48, borderTop:"1px solid #1e2d45", paddingTop:20, color:"#374151", fontSize:11, fontFamily:"monospace", display:"flex", justifyContent:"space-between", flexWrap:"wrap", gap:8 }}>
-          <span>Property Triage Screener v1.0</span>
-          <span>25% down · 7.25% rate · 25yr term · 45% expense ratio</span>
+          <span>Property Triage Screener v2.0</span>
+          <span>25% dn · 7.25% · 25yr · 45% expense ratio · $250K/unit hard cap · land-play detector</span>
         </div>
       </div>
     </div>
